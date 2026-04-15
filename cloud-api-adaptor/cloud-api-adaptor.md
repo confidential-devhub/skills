@@ -74,10 +74,83 @@ if [ ! -e "${BUILDROOT}/etc/resolv.conf" ]; then
 fi
 ```
 
-## 3. Expected test failure — not a real failure
+## 3. kata-agent / CDH startup race — `image_guest_pull` always fails with KBS initdata
+
+When a pod uses initdata (e.g. KBS tests with `cc_kbc`), the startup sequence is:
+`process-user-data` → AA socket → CDH starts → CDH socket.
+`kata-agent` also starts after `process-user-data` and probes the CDH socket immediately.
+Because CDH isn't ready yet, kata-agent permanently marks CDH as `None` and panics
+on every `image_guest_pull` with **"Confidential Data Hub not initialized"**.
+
+**Fix:** Add `confidential-data-hub.service` to kata-agent's `After=` and `Wants=` so it
+waits for CDH to fully start before probing.
+
+File: `podvm-mkosi/resources/binaries-tree/etc/systemd/system/kata-agent.service`
+
+```ini
+[Unit]
+After=netns@podns.service process-user-data.service scratch-storage.service confidential-data-hub.service
+Wants=scratch-storage.service confidential-data-hub.service
+```
+
+After editing this file, **rebuild the podvm image** before running tests.
+
+## 4. Expected test failure — not a real failure
 `TestLibvirtCreatePeerPodWithLargeImage` fails locally because `ENABLE_SCRATCH_SPACE=false`
 in the libvirt config. It calls `SkipTestOnCI(t)` and is intentionally skipped in CI.
 Do not treat this as a regression. Expected result: **23 PASS, 1 FAIL** on a healthy setup.
+
+## 5. Storage volumes missing when TEST_PROVISION=no
+
+`CreateVPC()` — which creates the `podvm-base.qcow2` and `another-podvm-base.qcow2` volumes
+in the libvirt default pool — is only called when `TEST_PROVISION=yes`. When the cluster
+already exists (`TEST_PROVISION=no`), it is skipped, and `UploadPodvm()` will fail with:
+
+```
+virError(Code=50): Storage volume not found: no storage vol with matching name 'podvm-base.qcow2'
+```
+
+**Fix:** Before running tests with `TEST_PROVISION=no`, check that the volumes exist and
+create them if missing:
+
+```bash
+ssh -i ~/.ssh/id_rsa ubuntu@<libvirt_host> "
+  virsh -c qemu:///system vol-list default | grep podvm-base.qcow2 ||
+  virsh -c qemu:///system vol-create-as default podvm-base.qcow2 20G --format qcow2 --allocation 2G
+  virsh -c qemu:///system vol-list default | grep another-podvm-base.qcow2 ||
+  virsh -c qemu:///system vol-create-as default another-podvm-base.qcow2 20G --format qcow2 --allocation 2G
+"
+```
+
+The `<libvirt_host>` is the IP in `libvirt_uri` from `libvirt.properties`.
+
+## 6. KBS cert mismatch after failed or repeated runs
+
+The test setup generates a fresh TLS cert pair on every run and writes it to
+`test/trustee/kbs/config/kubernetes/base/https-cert.pem`. It also deploys a new KBS pod
+using that cert. But **if an old KBS pod from a prior run is still running** (because the
+`coco-tenant` namespace didn't finish terminating), the new cert is written to disk while
+the pod continues serving the old cert. `kbs-client` then fails with:
+
+```
+SSL: certificate verify failed (self-signed certificate)
+```
+
+**Fix:** Force-delete the namespace and confirm it is gone before re-running:
+
+```bash
+export KUBECONFIG=~/.kcli/clusters/peer-pods/auth/kubeconfig
+kubectl delete namespace coco-tenant --ignore-not-found --force --grace-period=0
+# Wait until fully gone
+until ! kubectl get namespace coco-tenant 2>/dev/null; do sleep 2; done
+echo "coco-tenant namespace gone"
+```
+
+Also note: `generateCert()` is called **twice** per test run (once in `NewKeyBrokerService()`
+and once inside `Deploy()`), each time overwriting `https-cert.pem`. The cert that ends up
+in `https-cert.pem` is from the second call, while the cert actually deployed to the KBS pod
+is from the first. This is a bug in the test framework — the workaround is simply ensuring
+no stale KBS pod is running before the test starts.
 </known_pitfalls>
 
 <process>
@@ -87,7 +160,7 @@ Do not treat this as a regression. Expected result: **23 PASS, 1 FAIL** on a hea
 Parse `$ARGUMENTS`:
 - First positional arg: subcommand (`setup`, `build`, `test`)
 - `--debug`: boolean flag, applies to build (use `make image-debug`) and test (add `-v`)
-- `--filter <regex>`: test name regex for `RUN_TESTS` env var (test subcommand only)
+- `--filter <regex>`: test name regex passed to `go test -run` (test subcommand only). Use Go regex alternation to run multiple tests: `(TestLibvirtFoo|TestLibvirtBar)` — the parentheses are optional but make intent clear.
 - `--kbs`: boolean flag (test subcommand only) — sets `DEPLOY_KBS=yes` to deploy the Key Broker Service and enable KBS-related tests
 
 If no subcommand given, ask:
@@ -444,16 +517,45 @@ Before running, clean up any leftover CAA installation from a previous run (avoi
 ```bash
 helm uninstall peerpods -n confidential-containers-system 2>/dev/null || true
 kubectl delete namespace confidential-containers-system --ignore-not-found --wait=true --timeout=60s
-kubectl get namespaces | awk '/coco-pp-e2e/{print $1}' | xargs kubectl delete namespace --ignore-not-found 2>/dev/null || true
-# If DEPLOY_KBS=yes, also clean up previous KBS deployment:
-kubectl delete namespace coco-tenant --ignore-not-found --wait=true --timeout=120s
+kubectl get namespaces | awk '/coco-pp-e2e/{print $1}' | xargs -r kubectl delete namespace --ignore-not-found 2>/dev/null || true
 ```
 
-Run:
+If `DEPLOY_KBS=yes`, also fully terminate the KBS namespace before starting (see pitfall #6):
+```bash
+kubectl delete namespace coco-tenant --ignore-not-found --force --grace-period=0 2>/dev/null || true
+until ! kubectl get namespace coco-tenant &>/dev/null; do sleep 2; done
+echo "coco-tenant namespace gone"
+```
+
+Pre-create libvirt volumes if they don't exist (required when `TEST_PROVISION=no`, see pitfall #5).
+Parse `libvirt_uri` from `libvirt.properties` to get the host, then:
+```bash
+LIBVIRT_HOST=$(grep libvirt_uri "$CAA_ROOT/libvirt.properties" | grep -oP '(?<=@)[^/]+')
+SSH_KEY=$(grep libvirt_ssh_key_file "$CAA_ROOT/libvirt.properties" | grep -oP '"[^"]+"' | tr -d '"')
+for VOL in podvm-base.qcow2 another-podvm-base.qcow2; do
+  ssh -i "$SSH_KEY" -o BatchMode=yes ubuntu@"$LIBVIRT_HOST" \
+    "virsh -c qemu:///system vol-list default | grep -q $VOL || \
+     virsh -c qemu:///system vol-create-as default $VOL 20G --format qcow2 --allocation 2G" 2>&1
+done
+```
+
+**Run using `go test` directly** (not `make test-e2e`). The Makefile passes `RUN_TESTS`
+unquoted, so a `|` in the filter value is interpreted as a shell pipe. `go test` with a
+single-quoted `-run` argument avoids this:
+
 ```bash
 cd "$CAA_ROOT"
-make test-e2e
+go test -v -tags=libvirt \
+  -timeout "${TEST_E2E_TIMEOUT:-75m}" \
+  -count=1 \
+  -run "${RUN_TESTS:-.}" \
+  ./test/e2e
 ```
+
+When `RUN_TESTS` is unset or empty this runs all tests (`.` matches everything).
+When set (e.g. `RUN_TESTS='(TestLibvirtKbsKeyRelease|TestLibvirtSealedSecret)'`), the
+shell single-quoting in the export means the `|` reaches `go test` as a regex alternation,
+not a pipe.
 
 ### Step 4 — Parse and report results
 

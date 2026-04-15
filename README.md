@@ -1,12 +1,22 @@
-# Claude Code Skills
+# Claude Code Skills & Commands
 
-A collection of [Claude Code](https://claude.ai/code) slash command skills for confidential containers development workflows.
+A collection of [Claude Code](https://claude.ai/code) slash commands and skills for confidential containers development workflows.
+
+## Available Commands
+
+Commands are custom slash commands installed in `~/.claude/commands/` and invoked with `/command-name`.
+
+| Command | Invocation | Description |
+|---|---|---|
+| [cloud-api-adaptor](./cloud-api-adaptor/) | `/cloud-api-adaptor` | Set up, build, and test cloud-api-adaptor with libvirt locally (amd64, Ubuntu 24.04 podvm via mkosi) |
 
 ## Available Skills
 
-| Skill | Invocation | Description |
-|---|---|---|
-| [cloud-api-adaptor](./cloud-api-adaptor/) | `/cloud-api-adaptor` | Set up, build, and test cloud-api-adaptor with libvirt locally (amd64, Ubuntu 24.04 podvm via mkosi) |
+Skills extend Claude Code via the Skill tool and are installed in `~/.claude/skills/`.
+
+| Skill | Description |
+|---|---|
+| *(more coming soon)* | |
 
 ## Installation
 
@@ -15,26 +25,26 @@ A collection of [Claude Code](https://claude.ai/code) slash command skills for c
 - [Claude Code](https://claude.ai/code) CLI installed
 - `~/.claude/commands/` directory (created automatically by Claude Code)
 
-### Install a single skill
+### Install a single command
 
 ```bash
 git clone https://github.com/confidential-devhub/claude-skills
-cp claude-skills/<skill-name>/<skill-name>.md ~/.claude/commands/
+cp claude-skills/<command-name>/<command-name>.md ~/.claude/commands/
 ```
 
-### Install all skills
+### Install all commands
 
 ```bash
 git clone https://github.com/confidential-devhub/claude-skills
-for skill_dir in claude-skills/*/; do
-    skill_name=$(basename "$skill_dir")
-    cp "$skill_dir/$skill_name.md" ~/.claude/commands/
+for cmd_dir in claude-skills/*/; do
+    cmd_name=$(basename "$cmd_dir")
+    cp "$cmd_dir/$cmd_name.md" ~/.claude/commands/
 done
 ```
 
 Claude Code picks up files in `~/.claude/commands/` automatically — no restart required.
 
-### Keep skills up to date
+### Keep commands up to date
 
 ```bash
 cd claude-skills
@@ -44,7 +54,7 @@ git pull
 
 ## Usage
 
-Once installed, invoke a skill with its slash command in any Claude Code session:
+Once installed, invoke a command with its slash command in any Claude Code session:
 
 ```
 /cloud-api-adaptor setup
@@ -52,16 +62,16 @@ Once installed, invoke a skill with its slash command in any Claude Code session
 /cloud-api-adaptor test --filter TestLibvirtCreatePeerPod
 ```
 
-Run any skill with no arguments for an interactive prompt.
+Run any command with no arguments for an interactive prompt.
 
 ## Contributing
 
-Each skill lives in its own directory:
+Each command lives in its own directory:
 
 ```
-<skill-name>/
-├── <skill-name>.md   # The skill file (YAML frontmatter + Markdown body)
-└── README.md         # Human-readable docs for the skill
+<command-name>/
+├── <command-name>.md   # The command file (YAML frontmatter + Markdown body)
+└── README.md           # Human-readable docs for the command
 ```
 
-The skill file frontmatter must include `name`, `description`, `argument-hint`, and `allowed-tools`. Use an existing skill as a template, then open a pull request.
+The command file frontmatter must include `name`, `description`, `argument-hint`, and `allowed-tools`. Use an existing command as a template, then open a pull request.

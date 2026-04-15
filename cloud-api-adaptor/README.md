@@ -1,4 +1,4 @@
-# cloud-api-adaptor skill
+# cloud-api-adaptor command
 
 Manages the full local dev/test lifecycle for [cloud-api-adaptor](https://github.com/confidential-containers/cloud-api-adaptor) on libvirt (amd64). Builds an Ubuntu 24.04 podvm image via mkosi, manages the libvirt/kcli Kubernetes cluster, and runs e2e tests.
 
@@ -65,7 +65,7 @@ if [ ! -e "${BUILDROOT}/etc/resolv.conf" ]; then
 fi
 ```
 
-The skill checks for both of these automatically before every build and offers to fix them.
+The command checks for both of these automatically before every build and offers to fix them.
 
 ### Expected test failure
 
